@@ -274,6 +274,11 @@ class SurrogateClassifier(nn.Module):
 
 
     def forward(self, x, x_ctx, labels, training=True):
+        '''x：输入的编码特征，来自预训练模型（如 BERT）的输出。
+        x_ctx：上下文特征，表示通过掩码输入中的每个 token 之后，
+        从预训练语言模型中提取的上下文特征。
+        labels：输入数据对应的标签。
+        training：是否是训练模式，默认值为 True。'''
         if self.use_cos:
             normed_w = self.multi_head_call(self.normalize, self.classifier, nheads=self.nheads, scale=self.lam)
         if training:
@@ -294,6 +299,10 @@ class SurrogateClassifier(nn.Module):
             return F.cross_entropy(logits[labels>=0], labels[labels>=0]), logits
 
     def normalize(self, x, scale:float=0.):
+        '''normalize 方法实现了对输入张量 x 的归一化操作，
+        具体是对张量的每个向量（沿着最后一个维度）进行 L2 范数标准化。
+        归一化的结果是每个向量的长度（L2 范数）变为 1，
+        同时可以通过 scale 参数来对归一化进行调整。'''
         return  x / (torch.norm(x, p=2, dim=-1, keepdim=True) + 1e-9 + scale)
 
     def update_history(self, x, labels):
@@ -308,6 +317,9 @@ class SurrogateClassifier(nn.Module):
         return
 
     def multi_head_call(self, func, x, nheads, **kwargs):
+        '''实现了对输入张量的多头特征处理，类似于自注意力机制中多头操作的概念。
+        具体来说，它对输入特征张量进行了分割，并对每个分割部分分别应用指定的函数(特征标准化函数 normalize)，
+        然后将所有部分的结果拼接起来，最终返回整体结果。'''
         x_list = torch.split(x, self.head_dim, dim=-1)
         y_list = [func(item, **kwargs) for item in x_list]
         assert len(x_list) == nheads

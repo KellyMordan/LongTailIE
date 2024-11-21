@@ -42,7 +42,7 @@ class SeqCls(nn.Module):
         self.nclass = nclass
         self.alpha = alpha
         self.gamma = gamma
-        self.focal = focal
+        self.focal = focal 
         self.featurewise = featurewise
         self.topicwise = topicwise
         self.momentum = momentum
@@ -179,8 +179,9 @@ class SeqCls(nn.Module):
 
     def forward(self, batch, predict=False, return_output=False, **kwargs):
         if not self.surrogate_distill:
+            # 直接通过预训练语言模型（如 BERT）对输入进行编码。
             encoded = self.pretrained_lm(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"])
-        labels = batch[f"{self.task_of_label}_labels"]
+        labels = batch[f"{self.task_of_label}_labels"] #trigger表示事件抽取，entity表示实体抽取任务
 
         if self.featurewise:
             outputs = self.feature_filters.forward(encoded.last_hidden_state)
@@ -209,7 +210,11 @@ class SeqCls(nn.Module):
                 outputs = torch.matmul(encoded.last_hidden_state, weights.transpose(0, 1))
             loss = self.compute_loss(outputs, labels)
         elif self.surrogate:
-            loss, outputs = self.surrogate_cls.forward(x=encoded.last_hidden_state, labels=labels, x_ctx=batch["context_features"],training=not predict)
+            loss, outputs = self.surrogate_cls.forward(
+                x=encoded.last_hidden_state, 
+                labels=labels, 
+                x_ctx=batch["context_features"],
+                training=not predict)
             if self.surrogate_lws:
                 loss = self.compute_loss(outputs * self.lws_weight, labels)
         elif self.surrogate_distill:

@@ -16,6 +16,7 @@ _MUTUAL_RELATIONS = {"PHYS:Near", "PER-SOC:Business", "PER-SOC:Lasting-Personal"
 
 @dataclass
 class Annotation(object):
+    "Annotation类用于表示句子的标注信息，包含触发器、实体、关系和角色的标注："
     triggers: List[Tuple[int, int, str]]
     entities: List[Tuple[int, int, str]]
     relations: List[Tuple[int, int, str]]
@@ -23,7 +24,11 @@ class Annotation(object):
 
     @classmethod
     def from_oneie(cls, oneie):
-        # 注释
+        '''from_oneie 是一个类方法，
+        用于从特定的数据格式（例如 OneIE 格式）中读取标注信息并转换为 Annotation 对象。
+        在 Annotation 类中，cls 是一个类方法 (@classmethod) 的第一个参数。
+        它代表当前类本身，而不是类的实例。
+        '''
         entities = []
         entity_id_to_index = {}
         if 'entity_mentions' in oneie:
@@ -76,6 +81,7 @@ class Annotation(object):
 
 @dataclass
 class Instance(object):
+    '''Instance 类用于表示单个实例及其标注信息。'''
     tokens : Union[List[str], str]
     annotations : Annotation
     sentence_id : str
@@ -94,6 +100,7 @@ class Instance(object):
         return cls(tokens=tokens, annotations=annotations, sentence_id=sentence_id)
 
 def _to_instance(data, sentence_id_prefix:Optional[str]=None):
+    '''data是数据集划分的文章列表'''
     if sentence_id_prefix is None:
         sentence_id_prefix = ""
     elif not sentence_id_prefix.endswith("_"):

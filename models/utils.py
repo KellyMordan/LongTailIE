@@ -243,10 +243,10 @@ class SurrogateClassifier(nn.Module):
         super().__init__()
         self.nheads = nheads
 
-        self.classifier = nn.Parameter(torch.Tensor(output_dim, input_dim), requires_grad=True)
+        self.classifier = nn.Parameter(torch.Tensor(output_dim, input_dim), requires_grad=True) #张量，表示分类器的权重矩阵，其中：output_dim 是分类任务的类别数。input_dim 是输入特征的维度。它是通过 nn.Parameter 定义的，因此是 模型需要学习的参数。
         stdv = 1. / math.sqrt(self.classifier.size(1))
         self.classifier.data.uniform_(-stdv, stdv)
-
+        #是一个全连接层（nn.Linear），将输入上下文特征 r_ctx 投影到类别空间。
         self.ctx_q = nn.Linear(input_dim, output_dim if na_att else output_dim-1)
         self.word_g = nn.Linear(input_dim, 1)
 
@@ -258,7 +258,9 @@ class SurrogateClassifier(nn.Module):
         self.lam = lam
         self.use_cos = False
 
+        #形状为 (output_dim - 1, input_dim) 的张量，保存每个类别的历史特征嵌入。初始化为全零张量。 output_dim-1:通常第 0 类（如 "NA" 类，非目标类别）不会更新特征，因此减去 1。
         self.register_buffer("history_input", torch.FloatTensor(output_dim-1, input_dim).zero_())
+        #形状为 (output_dim - 1) 的张量，保存每个类别的样本计数。用于记录每个类别更新特征嵌入的次数。
         self.register_buffer("history_count", torch.LongTensor(output_dim-1).zero_())
 
     def p_loss(self, logits, plabels):
@@ -279,21 +281,26 @@ class SurrogateClassifier(nn.Module):
         从预训练语言模型中提取的上下文特征。
         labels：输入数据对应的标签。
         training：是否是训练模式，默认值为 True。'''
-        if self.use_cos:
+        if self.use_cos: 
+            #normed_w 是类别权重向量，经过归一化。
             normed_w = self.multi_head_call(self.normalize, self.classifier, nheads=self.nheads, scale=self.lam)
         if training:
             self.update_history(x, labels)
-        r_sub, att_logits = self.generate_substitute(x_ctx)
+        r_sub, att_logits = self.generate_substitute(x_ctx) #上下文替代特征 r_sub
+        # g_word 是输入特征和上下文特征之间的加权比例，形状为 (batch_size, seq_len, 1)。
         g_word = torch.sigmoid(self.word_g(x))
-        if self.use_cos:
+        if self.use_cos: #决定使用 余弦相似度
+            #normed_x 是归一化后的特征，形状为 (batch_size, seq_len, input_dim)
             normed_x = self.multi_head_call(self.normalize, (g_word * x + (1 - g_word) * r_sub), nheads=self.nheads)
+            #self.tau 是温度系数，用于缩放特征。normed_w 是类别权重向量，经过归一化。torch.matmul 计算归一化特征和类别权重之间的点积，得到分类 logits。
             logits = torch.matmul(normed_x * self.tau, normed_w.transpose(0, 1))
         else:
-            logits = torch.matmul((g_word * x + (1 - g_word) * r_sub), self.classifier.transpose(0, 1))
+            logits = torch.matmul((g_word * x + (1 - g_word) * r_sub), self.classifier.transpose(0, 1)) #与分类权重矩阵 self.classifier 进行矩阵乘法，得到分类 logits。
 
         if torch.any(torch.isnan(logits)):
             raise ValueError
-        if self.na_att:
+        if self.na_att: #布尔变量，决定是否计算额外的注意力损失。
+            #基于分类 logits 和标签计算交叉熵损失+基于注意力 logits 和标签计算交叉熵损失。
             return F.cross_entropy(logits[labels>=0], labels[labels>=0]) + F.cross_entropy(att_logits[labels>=0], labels[labels>=0]), logits
         else:
             return F.cross_entropy(logits[labels>=0], labels[labels>=0]), logits
@@ -308,18 +315,25 @@ class SurrogateClassifier(nn.Module):
     def update_history(self, x, labels):
         with torch.no_grad():
             for i in range(1, self.output_dim):
-                if torch.sum((labels==i).long()) > 0:
+                if torch.sum((labels==i).long()) > 0: #判断是否有样本属于当前类别。
+                    '''x[labels == i]：提取属于类别 i 的样本的特征。
+                    .clone().detach()：
+                    确保计算的特征与计算图无关，不会影响梯度。
+                    .mean(0, keepdim=True)：
+                    计算属于类别 i 的样本特征的均值（按行求均值）。'''
                     pos_features = x[labels == i].clone().detach().mean(0, keepdim=True)
+                    #是一个衰减系数（如 0.9 或 0.99），控制新特征对历史特征的影响程度。
                     self.history_input[i-1] = self.mu * self.history_input[i-1] + pos_features
+                    #对应类别的样本计数加 1，表示该类别的历史特征又进行了更新。
                     self.history_count[i-1] += 1
         if torch.any(torch.isnan(self.history_input)):
             raise ValueError
         return
 
     def multi_head_call(self, func, x, nheads, **kwargs):
-        '''实现了对输入张量的多头特征处理，类似于自注意力机制中多头操作的概念。
-        具体来说，它对输入特征张量进行了分割，并对每个分割部分分别应用指定的函数(特征标准化函数 normalize)，
-        然后将所有部分的结果拼接起来，最终返回整体结果。'''
+        '''x(比如，self.classifier )被切分为 nheads 个子张量，每个子张量的维度为 (output_dim, head_dim)。
+对每个子张量执行归一化操作（通过 self.normalize），使得每个向量的 L2 范数为 1。
+归一化后的子张量重新拼接成与 self.classifier 相同的形状 (output_dim, input_dim)。'''
         x_list = torch.split(x, self.head_dim, dim=-1)
         y_list = [func(item, **kwargs) for item in x_list]
         assert len(x_list) == nheads
@@ -327,16 +341,23 @@ class SurrogateClassifier(nn.Module):
         return torch.cat(y_list, dim=-1)
 
     def generate_substitute(self, r_ctx):
-        w_logits = self.ctx_q(r_ctx)
-        w = torch.softmax(w_logits, dim=-1)
-        if self.mu < 1:
+        '''根据上下文特征生成类别的代理特征（substitute features），
+        用于在训练中处理长尾类别特征稀疏的问题。substitute：
+        替代特征，用于后续模型计算。
+        结合了上下文特征 r_ctx 和类别特征 v 的信息。
+        w_logits：
+        类别得分，表示每个类别的原始注意力分布。
+        '''
+        w_logits = self.ctx_q(r_ctx)#通过 ctx_q 得到的类别得分矩阵，形状为 (batch_size, output_dim) 或 (batch_size, output_dim-1)。
+        w = torch.softmax(w_logits, dim=-1) #生成类别注意力权重矩阵，形状与 w_logits 相同。每一行的权重和为 1，表示对每个类别的权重分布。
+        if self.mu < 1: #，对历史特征进行归一化
             v = self.history_input * (1 - self.mu) / (1 - torch.pow(self.mu, torch.clamp(self.history_count.unsqueeze(1), min=1)))
-        else:
+        else: #直接用类别的平均特征：
             v = self.history_input / self.history_count.unsqueeze(1)
-        if self.na_att:
+        if self.na_att: #True，跳过第 0 类（非目标类）的权重 w[..., 1:]。使用类别注意力权重 w 和类别特征向量 v 进行加权求和：
             substitute = torch.matmul(w[..., 1:], v)
-        else:
-            substitute = torch.matmul(w, v)
+        else: #直接使用所有类别的权重 w。使用类别注意力权重 w 和类别特征向量 v 进行加权求和：
+            substitute = torch.matmul(w, v) 
         return substitute, w_logits
 
     def reg(self,):

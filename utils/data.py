@@ -31,6 +31,7 @@ class Annotation(object):
         '''
         entities = []
         entity_id_to_index = {}
+        # 如何处理实体mention数据标注
         if 'entity_mentions' in oneie:
             for entity in oneie['entity_mentions']:
                 if 'start' not in entity:
@@ -61,6 +62,7 @@ class Annotation(object):
                     relation_label
                     ))
 
+        # 触发词以及argument的处理
         triggers = []
         roles = []
         if 'event_mentions' in oneie:
@@ -100,7 +102,11 @@ class Instance(object):
         return cls(tokens=tokens, annotations=annotations, sentence_id=sentence_id)
 
 def _to_instance(data, sentence_id_prefix:Optional[str]=None):
-    '''data是数据集划分的文章列表'''
+    '''data是数据集划分的文章列表
+    data：一个数据列表，每个元素是一个包含句子和相关标注信息的字典。
+    sentence_id_prefix：为每条实例的 sentence_id 添加前缀（如 train_ 或 test_），默认为空字符串。
+    如果提供了前缀但没有以下划线 _ 结尾，则自动补充 _。
+    '''
     if sentence_id_prefix is None:
         sentence_id_prefix = ""
     elif not sentence_id_prefix.endswith("_"):
@@ -131,6 +137,7 @@ class IDataset(Dataset):
         *args,
         **kwargs) -> None:
         super().__init__()
+        #如果传入的 label_ignore 是 int, list, 或 set，会构造成一个字典，存储需要忽略的标签：
         if isinstance(label_ignore, int):
             label_ignore = {
                 label_type: {label_ignore} 
@@ -141,15 +148,23 @@ class IDataset(Dataset):
                 label_type: set(label_ignore)
                 for label_type in self._LABEL_TYPES
             }
+        '''{
+            "event": set(),
+            "entity": set(),
+            "relation": set(),
+            "role": set(),
+            
+        }'''
         self.label_ignore = label_ignore if label_ignore else {
                 label_type: set() 
                 for label_type in self._LABEL_TYPES
-            }
+            } #如果没有要忽略的label，就变成一个空的字典
         self.label2id = label2id
+        #如果某个标签类型（如 "relation", "role"）在 label2id 中缺失，自动补充 {"NA": 0}：
         for k in self._LABEL_TYPES:
             if k not in self.label2id: self.label2id[k] = {"NA": 0}
         self.instances = instances
-        self.instance_tokenized = isinstance(instances[0].tokens, list)
+        self.instance_tokenized = isinstance(instances[0].tokens, list) #检查 tokens 是否已分词。
         self.tokenizer = tokenizer
         self.use_pseudo_labels = use_pseudo_labels
         self.max_length = max_length
@@ -158,9 +173,13 @@ class IDataset(Dataset):
         self._generator = np.random.default_rng(seed)
 
     def __len__(self) -> int:
-        return len(self.instances)
+        return len(self.instances) 
 
     def __getitem__(self, index: int) -> Instance:
+        '''这段代码定义了一个 __getitem__ 方法，用于根据索引获取数据集中的实例。具体功能如下：
+        检查 self.root 是否存在。
+        如果 self.root 存在，则加载对应实例的上下文特征，并返回实例及其上下文特征。
+        如果 self.root 不存在，则直接返回实例。'''
         if self.root:
             ctx_feat = torch.load(os.path.join(self.root, "contextual", self.instances[index].sentence_id))
             return self.instances[index], ctx_feat
@@ -299,7 +318,6 @@ class IDataset(Dataset):
             input_batch.pop(key)
         return input_batch
 
-'''
 def get_dev_test_encodings(
     opts:Optional[argparse.Namespace]=None,
     root:Optional[str]=None,

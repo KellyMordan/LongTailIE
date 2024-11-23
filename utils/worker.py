@@ -383,6 +383,7 @@ class Worker(object):
 
     def get_datasets(self, test_only=False) -> Tuple[Union[IDataset, None], Union[IDataset, None], IDataset]:
 
+        '''初始化各类数据文件的路径'''
         label_info_file = os.path.join(self.root, "label_info.json")
         train_file = os.path.join(self.root, "train.jsonl")
         dev_file = os.path.join(self.root, "dev.jsonl")
@@ -397,6 +398,8 @@ class Worker(object):
         train_dataset = None
         dev_dataset = None
 
+        '''构建 label2id 字典，将标签名称映射到其对应的 id，
+        并为每种类型的标签添加 "NA" 标签，设置为 0，表示不存在的标签。事件类型：label2id;role:label2id;entity:label2id'''
         with open(label_info_file, "rt") as f:
             label_info = json.load(f)
             label2id = {
@@ -418,7 +421,7 @@ class Worker(object):
 
         with open(test_file, "rt") as f:
             test = _to_instance([json.loads(line) for line in f], "test")
-        if "roberta" in self.model_name.lower():
+        if "roberta" in self.model_name.lower():#则额外设置 add_prefix_space=self.word_level（可能用于特定模型需要的空格处理）。
             tokenizer = AutoTokenizer.from_pretrained(self.model_name, add_prefix_space=self.word_level)
         else:
             tokenizer = AutoTokenizer.from_pretrained(self.model_name)

@@ -53,7 +53,7 @@ def main():
                 args=(world_size, opts, SeqCls, net_kwargs),
                 nprocs=world_size,
                 join=True)
-    else:
+    else: #单一gpu 
         results = []
         for seed in SEEDS:
             worker = Worker(opts)

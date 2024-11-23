@@ -209,7 +209,7 @@ class SeqCls(nn.Module):
                 weights = self.event_cls.weight * self.lws_weight.unsqueeze(1)
                 outputs = torch.matmul(encoded.last_hidden_state, weights.transpose(0, 1))
             loss = self.compute_loss(outputs, labels)
-        elif self.surrogate:
+        elif self.surrogate: #这里
             loss, outputs = self.surrogate_cls.forward(
                 x=encoded.last_hidden_state, 
                 labels=labels, 

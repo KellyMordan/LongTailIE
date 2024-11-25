@@ -187,7 +187,7 @@ class IDataset(Dataset):
             return self.instances[index]
     
     def collate_batch(self, batch:List[Union[Instance, Tuple[Instance, torch.Tensor]]]) -> BatchEncoding:
-        if self.root:
+        if self.root: #因为重写了getItem方法，所以有ctx-feats
             ctx_feats = [t[1] for t in batch]
             batch = [t[0] for t in batch]
         text = []
@@ -198,6 +198,7 @@ class IDataset(Dataset):
         for i in batch:
             text.append(i.tokens)
             annotations.append(i.annotations)
+        # 对整个 text 列表进行批量编码。
         encoded:BatchEncoding = self.tokenizer(
             text=text,
             max_length=self.max_length,
@@ -209,23 +210,33 @@ class IDataset(Dataset):
             return_special_tokens_mask=True,
             return_tensors='pt'
         )
+        # TODO：这里需要改动
         _ = encoded.pop("special_tokens_mask")
-        _n_triggers = max(len(t.triggers) if t is not None else 0 for t in annotations)
-        trigger_spans = torch.zeros(len(batch), _n_triggers, encoded.input_ids.size(1), dtype=torch.float)
+        _n_triggers = max(len(t.triggers) if t is not None else 0 for t in annotations) #一个样本（文章）中最多的trigger数目
+        trigger_spans = torch.zeros(len(batch), _n_triggers, encoded.input_ids.size(1), dtype=torch.float) #: 张量大小为 [批次大小, 最大触发器数, 序列长度]，初始值为 0，数据类型为 float。
         trigger_labels = torch.zeros_like(encoded.input_ids, dtype=torch.long)
-        trigger_labels[encoded['attention_mask']==0] = -100
-        sentence_labels = torch.zeros(encoded.input_ids.size(0), max(self.label2id['event'].values()))
+        trigger_labels[encoded['attention_mask']==0] = -100  #无效位置（attention_mask 为 0 的位置）设置为 -100，表示这些位置不参与损失计算。
+        sentence_labels = torch.zeros(encoded.input_ids.size(0), max(self.label2id['event'].values())) #大小为 [批次大小, 最大事件类别数量]，初始值为 0。 表示每个样本中是否包含某个特定事件类别，通常用于多标签分类任务。
+       
+        #实体的相关内容
         _n_entities = max(len(t.entities) if t is not None else 0 for t in annotations)
-        entity_spans = torch.zeros(len(batch), _n_entities, encoded.input_ids.size(1), dtype=torch.float)
-        entity_labels = torch.zeros_like(encoded.input_ids, dtype=torch.long)
-        _n_relations = sum([len(t.relations) if t is not None else 0 for t in annotations])
-        relation_labels = - torch.ones(len(batch), _n_entities, _n_entities, dtype=torch.long)
+        entity_spans = torch.zeros(len(batch), _n_entities, encoded.input_ids.size(1), dtype=torch.float) #小为 [批次大小, 最大实体数, 序列长度]，初始值为 0，数据类型为 float。
+        entity_labels = torch.zeros_like(encoded.input_ids, dtype=torch.long) #用于存储实体的标签信息。大小与 encoded.input_ids 一致，初始值为 0，数据类型为 long。这个张量标记输入序列中哪些 token 是实体及其类别。
+        
+        #实体-实体间的 relation 相关内容
+        _n_relations = sum([len(t.relations) if t is not None else 0 for t in annotations]) #一共有多少关系
+        relation_labels = - torch.ones(len(batch), _n_entities, _n_entities, dtype=torch.long) #用于存储实体之间关系的标签。大小为 [批次大小, 最大实体数, 最大实体数]，初始值为 -1，数据类型为 long。
+       
+        #角色的相关内容
         _n_roles = sum([len(t.roles) if t is not None else 0 for t in annotations if t is not None])
-        role_labels = - torch.ones(len(batch), _n_triggers, _n_entities, dtype=torch.long)
+        role_labels = - torch.ones(len(batch), _n_triggers, _n_entities, dtype=torch.long) #用于存储触发器和实体之间的角色关系。大小为 [批次大小, 最大触发器数, 最大实体数]，初始值为 -1，数据类型为 long。表示实体在特定触发器中所扮演的角色
         role_event_labels = - torch.ones(len(batch), _n_triggers, _n_entities, dtype=torch.long)
 
+        '''为每个批次中的样本填充上下文特征，特征来源于掩码每个 token 后的语言模型输出。
+            确保上下文特征的长度不会超过序列最大长度（跳过 [CLS] 和 [SEP]）。
+            将所有上下文特征统一存储在一个大小为 [批次大小, 序列长度, 隐藏维度] 的张量中。'''
         if self.root:
-            ctx_features = torch.zeros(encoded.input_ids.size(0), encoded.input_ids.size(1), ctx_feats[0].size(1))
+            ctx_features = torch.zeros(encoded.input_ids.size(0), encoded.input_ids.size(1), ctx_feats[0].size(1)) #大小为 [批次大小, 序列长度, 隐藏维度]，初始值为 0。: 存储上下文特征，用于为每个 token 提供额外的上下文信息。
             for i, ctx_feat in enumerate(ctx_feats):
                 valid_len = min(ctx_feat.size(0), encoded.input_ids.size(1)-2)
                 ctx_features[i, 1:valid_len+1] = ctx_feat[:valid_len]
@@ -238,16 +249,26 @@ class IDataset(Dataset):
                 sentence_labels[ibatch] = -100
                 entity_labels[ibatch, :] = -100
                 continue
+            '''之前是按照批次中最大值也就是_n***来构造的向量，所以这里需要根据每个ibatch具体的来处理'''
             role_labels[ibatch, :len(anns.triggers), :len(anns.entities)] = 0
             role_event_labels[ibatch, :len(anns.triggers), :len(anns.entities)] = 0
             relation_labels[ibatch, :len(anns.entities), :len(anns.entities)] = 0
-            relation_labels[ibatch, torch.arange(len(anns.entities)), torch.arange(len(anns.entities))] = -1
+            relation_labels[ibatch, torch.arange(len(anns.entities)), torch.arange(len(anns.entities))] = -1 #对角线元素也就是实体与实体本身关系为-1
+            
+            '''一次遍历每一批次中样本（文档）中的triggers，
+            trigger_spans:
+            记录触发器的位置及其分布权重（均匀分配范围内权重）。
+            用于模型计算时表示触发器的范围信息。
+            trigger_labels:
+            记录触发器位置的事件类别标签。
+            用于训练过程中的标签监督，指导模型学习触发器位置和类别。'''
             for iann, ann in enumerate(anns.triggers):
                 start, end, label = ann[:3]
                 label_id = self.label2id['event'][label] if label in self.label2id['event'] else 0
                 label_id = label_id if label_id not in self.label_ignore['event'] else 0
+                
                 if label_id > 0:
-                    sentence_labels[ibatch, label_id-1] = 1
+                    sentence_labels[ibatch, label_id-1] = 1 #这里是因为原来的label_id是从1开始的，这里需要减一，0是NA
                 if self.instance_tokenized:
                     tok_start = encoded.word_to_tokens(ibatch, start)
                     tok_end = encoded.word_to_tokens(ibatch, end)
@@ -262,9 +283,10 @@ class IDataset(Dataset):
                     if isinstance(tok_end, TokenSpan):
                         tok_end = tok_end.start
                     else:
-                        tok_end += 1
+                        tok_end += 1 #在 BERT 或类似模型中，end 索引是闭区间，需将 end 向后移一位以覆盖实际结束位置。例如，tok_end = 5 表示结束位置为第 5 个 token，但要正确切片时通常需要取到 5+1。
                     trigger_spans[ibatch, iann, tok_start:tok_end] = 1. / (tok_end - tok_start)
                     trigger_labels[ibatch, tok_start:tok_end] = label_id
+            
             for iann, ann in enumerate(anns.entities):
                 start, end, label = ann[:3]
                 label_id = self.label2id['entity'][label] if label in self.label2id['entity'] else 0
@@ -286,6 +308,7 @@ class IDataset(Dataset):
                         print(start, end, text[ibatch])
                     entity_spans[ibatch, iann, tok_start:tok_end] = 1. / (tok_end - tok_start)
                     entity_labels[ibatch, tok_start:tok_end] = label_id
+
             for iann, ann in enumerate(anns.relations):
                 label_id = self.label2id['relation'][ann[2]] if ann[2] in self.label2id['relation'] else 0
                 relation_labels[ibatch, ann[0], ann[1]] = label_id if label_id not in self.label_ignore['relation'] else 0
@@ -293,6 +316,10 @@ class IDataset(Dataset):
             for iann, ann in enumerate(anns.roles):
                 label_id = self.label2id['role'][ann[2]] if ann[2] in self.label2id['role'] else 0
                 role_labels[ibatch, ann[0], ann[1]] = label_id if label_id not in self.label_ignore['role'] else 0
+                '''anns.triggers[ann[0]][2]:
+                获取当前角色关系中触发器（ann[0]）的事件类型。
+                anns.triggers 是当前样本中的触发器列表。
+                [2] 表示触发器的事件类型名称。'''
                 event_label_id = self.label2id['event'][anns.triggers[ann[0]][2]]
                 role_event_labels[ibatch, ann[0], ann[1]] = event_label_id if event_label_id not in self.label_ignore['event'] else 0
                 irol += 1
@@ -592,4 +619,3 @@ def get_data(
         num_workers=num_workers)
     loaders.append(test_loader)
     return loaders, label2id
-'''
